@@ -45,9 +45,17 @@ def select_bands(image, num_bands):
 
 
 def create_mask(geometry, shape, transform):
-    """Create a binary mask from the geometry (placeholder)."""
-    # For simplicity, create a full mask; implement proper rasterization if needed
-    mask = np.ones(shape, dtype=np.uint8)
+    """Create a binary mask by rasterizing the geometry."""
+    from rasterio import features
+
+    mask = features.rasterize(
+        [mapping(geometry)],
+        out_shape=shape,
+        transform=transform,
+        fill=0,
+        all_touched=True,
+        dtype="uint8",
+    )
     return mask
 
 
@@ -56,33 +64,39 @@ def build_dataset(geojson_path, tiff_dir, output_dir, target_size, num_bands):
     gdf = load_geojson(geojson_path)
     os.makedirs(output_dir, exist_ok=True)
 
-    tiff_files = [f for f in os.listdir(tiff_dir) if f.endswith(".tif")]
+    import glob
+
+    tiff_files = glob.glob(os.path.join(tiff_dir, "**/*.[tj][pi][2f]"), recursive=True)
 
     # Assuming one TIFF per geometry or match by some logic; here, simplistic assumption
     for idx, row in gdf.iterrows():
         geometry = row.geometry
-        # For demo, pick first TIFF; in real, match tile to geometry
-        tiff_path = os.path.join(tiff_dir, tiff_files[0] if tiff_files else None)
-        if not tiff_path:
-            print(f"No TIFF found for geometry {idx}")
-            continue
+        for tiff_path in tiff_files:
+            try:
+                image, meta = clip_raster_to_geometry(tiff_path, geometry)
 
-        image, meta = clip_raster_to_geometry(tiff_path, geometry)
+                # Select bands
+                image = select_bands(image, num_bands)
 
-        # Select bands
-        image = select_bands(image, num_bands)
+                # Resize
+                image_resized = resize_image(image, target_size)
 
-        # Resize
-        image_resized = resize_image(image, target_size)
+                # Create mask
+                mask = create_mask(geometry, target_size, meta["transform"])
 
-        # Create mask (placeholder)
-        mask = create_mask(geometry, target_size, meta["transform"])
+                # Save
+                np.save(os.path.join(output_dir, f"image_{idx}.npy"), image_resized)
+                np.save(os.path.join(output_dir, f"mask_{idx}.npy"), mask)
 
-        # Save
-        np.save(os.path.join(output_dir, f"image_{idx}.npy"), image_resized)
-        np.save(os.path.join(output_dir, f"mask_{idx}.npy"), mask)
-
-        print(f"Processed geometry {idx}")
+                print(f"Processed geometry {idx} with {tiff_path}")
+                break
+            except ValueError as e:
+                if "do not overlap" in str(e):
+                    continue
+                else:
+                    raise
+        else:
+            print(f"No overlapping raster found for geometry {idx}")
 
 
 def main():
